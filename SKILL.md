@@ -490,6 +490,12 @@ bun add effect @effect/sql @effect/sql-sqlite-bun
 bun add @effect/ai @effect/ai-anthropic
 ```
 
+**Row shape note:** `@effect/sql-sqlite-bun` returns column names verbatim (snake_case). Map to camelCase manually if your interface uses it:
+```ts
+const rows = yield* sql<{ session_key: string; claimed_at: number }>`SELECT ...`
+return rows.map(r => ({ sessionKey: r.session_key, claimedAt: r.claimed_at }))
+```
+
 **Key packages:**
 
 | Package | Purpose |
