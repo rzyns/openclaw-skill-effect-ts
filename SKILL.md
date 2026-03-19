@@ -220,11 +220,20 @@ Effect.runPromise(main)
 **Layer composition:**
 
 ```ts
-// Merge independent layers
+// Merge independent layers (no dependency between them)
 const AppLayer = Layer.mergeAll(PlaneClientLive, JobStoreLive, AppConfigLive)
 
-// Sequential — when one depends on another
+// provide(dependent, dependency) — when PlaneClientLive needs AppConfigLive to build
+// argument order: DEPENDENT first, DEPENDENCY second
 const AppLayer = Layer.provide(PlaneClientLive, AppConfigLive)
+//                             ^^^^^^^^^^^^^^   ^^^^^^^^^^^^
+//                             needs config     provides config
+
+// Chain of dependencies: A needs B, B needs C
+const Full = Layer.provide(
+  Layer.provide(A_Live, B_Live),   // A depends on B
+  C_Live                           // B depends on C
+)
 ```
 
 ---
@@ -266,7 +275,180 @@ const atomicClaimAndUpdate = Effect.gen(function* () {
 
 ---
 
+## Config — Environment Variables
+
+Never use `process.env` directly inside Effect programs. Use the `Config` module — it integrates with the Layer system and makes configuration testable.
+
+```ts
+import { Config, Effect, Layer } from "effect"
+
+// Define typed config
+const AppConfig = Config.all({
+  planeApiKey: Config.string("PLANE_API_KEY"),
+  planeUrl:    Config.string("PLANE_URL").pipe(Config.withDefault("https://plane.example.com")),
+  dbPath:      Config.string("DB_PATH").pipe(Config.withDefault(":memory:")),
+  dryRun:      Config.boolean("DRY_RUN").pipe(Config.withDefault(false)),
+})
+
+// Use in a Layer — config is resolved at Layer construction time
+const PlaneClientLive = Layer.effect(
+  PlaneClient,
+  Effect.gen(function* () {
+    const config = yield* AppConfig          // fails with ConfigError if missing
+    return PlaneClient.of({ ... })
+  })
+)
+```
+
+**`Config` primitives:**
+
+| Constructor | Type |
+|-------------|------|
+| `Config.string("KEY")` | `Config<string>` |
+| `Config.number("KEY")` | `Config<number>` |
+| `Config.boolean("KEY")` | `Config<boolean>` |
+| `Config.withDefault(value)` | makes optional |
+| `Config.all({ ... })` | struct of configs |
+| `Config.map(f)` | transform the value |
+
+`ConfigError` is automatically typed in the E channel when you `yield*` a `Config`.
+
+---
+
+## Schema — Validating External Data
+
+Use `Schema` from `effect` to validate external API responses, database rows, and config at service boundaries. This is Effect's built-in replacement for Zod.
+
+```ts
+import { Schema } from "effect"
+
+// Define a schema
+const IssueSchema = Schema.Struct({
+  id:    Schema.String,
+  name:  Schema.String,
+  state: Schema.String,
+})
+type Issue = Schema.Schema.Type<typeof IssueSchema>
+
+// Validate an API response — decodes unknown → Issue or fails with ParseError
+const decodeIssue = Schema.decodeUnknown(IssueSchema)
+
+const getIssue = (id: string) =>
+  Effect.gen(function* () {
+    const raw = yield* Effect.tryPromise({
+      try: () => fetch(`/api/issues/${id}`).then(r => r.json()),
+      catch: (e) => new FetchError({ cause: e })
+    })
+    // Validate at the boundary — ParseError is tracked in E channel
+    return yield* decodeIssue(raw)
+  })
+```
+
+**Key Schema combinators:**
+
+```ts
+Schema.String                          // string
+Schema.Number                          // number
+Schema.Boolean                         // boolean
+Schema.Literal("Prepare", "Test")      // union of string literals
+Schema.Array(Schema.String)            // array
+Schema.Struct({ id: Schema.String })   // object
+Schema.Union(SchemaA, SchemaB)         // discriminated union
+Schema.optional(Schema.String)         // optional field
+```
+
+---
+
+## Match — Exhaustive Pattern Matching
+
+Use `Match` for discriminated unions instead of if/else chains. It's exhaustive — TypeScript errors if you miss a case.
+
+```ts
+import { Match } from "effect"
+
+type JobState =
+  | { readonly _tag: "Prepare"; readonly issueId: string }
+  | { readonly _tag: "Test";    readonly issueId: string; readonly sessionKey: string }
+  | { readonly _tag: "Done";    readonly issueId: string }
+
+// Match on _tag — exhaustive
+const describeState = (state: JobState): string =>
+  Match.value(state).pipe(
+    Match.tag("Prepare", (s) => `${s.issueId} is being prepared`),
+    Match.tag("Test",    (s) => `${s.issueId} testing in ${s.sessionKey}`),
+    Match.tag("Done",    (s) => `${s.issueId} is complete`),
+    Match.exhaustive    // compile error if any case is missing
+  )
+
+// Match returning an Effect — use Match.orElse or Match.exhaustive
+const handleState = (state: JobState) =>
+  Match.value(state).pipe(
+    Match.tag("Prepare", (s) => spawnAgent(s.issueId)),
+    Match.tag("Test",    (s) => runTests(s.sessionKey)),
+    Match.tag("Done",    ()  => Effect.void),
+    Match.exhaustive
+  )
+```
+
+---
+
+## Effect.tap / Effect.tapError
+
+Use `tap` to observe values or perform side effects without changing them. Avoids unnecessary `gen` blocks just to log.
+
+```ts
+// tap — runs effect for side effect, passes original value through
+const program = pipe(
+  getIssue(issueId),
+  Effect.tap(issue  => Effect.logInfo(`Found issue: ${issue.name}`)),
+  Effect.tap(issue  => metrics.increment("issues.fetched")),
+  Effect.flatMap(issue => processIssue(issue))
+)
+
+// tapError — runs on failure, passes error through unchanged
+const safeProgram = pipe(
+  riskyOperation(),
+  Effect.tapError(err => Effect.logError("Operation failed", { err }))
+)
+
+// Both together
+const robust = pipe(
+  fetchData(),
+  Effect.tap(d    => Effect.logDebug("Fetched", { count: d.length })),
+  Effect.tapError(e => Effect.logError("Fetch failed", { cause: e })),
+  Effect.map(transform)
+)
+```
+
+---
+
 ## Error Handling Patterns
+
+### Full recovery combinator menu
+
+```ts
+// catchTag — recover from one specific tagged error
+Effect.catchTag("NotFoundError", (e) => Effect.succeed(defaultValue))
+
+// catchTags — recover from multiple
+Effect.catchTags({
+  NotFoundError:  (e) => Effect.succeed(null),
+  NetworkError:   (e) => Effect.fail(new ServiceUnavailable()),
+})
+
+// catchAll — recover from any expected error
+Effect.catchAll((e) => Effect.logError("failed", e).pipe(Effect.as(null)))
+
+// orElse — try a fallback effect on any failure
+Effect.orElse(() => fetchFromFallback())
+
+// orDie — convert expected error to defect (use sparingly)
+Effect.orDie   // E channel becomes never; error becomes unrecoverable defect
+
+// either — convert to Either, never fails (good for explicit branching)
+const result: Either.Either<A, E> = yield* Effect.either(riskyEffect)
+if (Either.isLeft(result)) { /* handle error */ }
+```
 
 ### Catching specific expected errors
 
@@ -304,6 +486,35 @@ const fetchFromPlane = pipe(
   httpGet(url),
   Effect.mapError((e) => new PlaneError({ cause: e }))
 )
+```
+
+---
+
+## Option and Nullable Bridging
+
+Use `Effect.fromNullable` and `Option` to bridge nullable JavaScript APIs without casting.
+
+```ts
+import { Effect, Option } from "effect"
+
+// fromNullable — wraps null/undefined in NoSuchElementException
+const user = yield* Effect.fromNullable(map.get(id))
+// Fails with NoSuchElementException if undefined — typed in E channel
+
+// Option inside Effect — when null is expected and not an error
+const maybeUser = yield* Effect.sync(() => map.get(id)).pipe(
+  Effect.map(Option.fromNullable)
+)
+// type: Effect<Option<User>, never, never>
+
+// Pattern match on Option
+Option.match(maybeUser, {
+  onNone: () => "not found",
+  onSome: (u) => u.name,
+})
+
+// getOrElse — provide a default
+const name = Option.getOrElse(maybeUser, () => "anonymous")
 ```
 
 ---
@@ -416,6 +627,109 @@ const user = yield getUser(id)
 // RIGHT
 const user = yield* getUser(id)
 ```
+
+---
+
+## Testing Effect Programs
+
+Effect programs are highly testable because dependencies are injected via Layers. Use `bun:test` as the test runner.
+
+```ts
+import { describe, it, expect } from "bun:test"
+import { Effect, Layer, Exit } from "effect"
+
+// Test implementation — in-memory, no I/O
+const JobStoreFake = Layer.succeed(JobStore, {
+  claim:     (id, key) => Effect.void,
+  getActive: ()        => Effect.succeed([]),
+})
+
+describe("dispatchJob", () => {
+  it("claims the job and returns session", async () => {
+    const program = dispatchJob("issue-1").pipe(
+      Effect.provide(JobStoreFake),
+      Effect.provide(PlaneClientFake),
+    )
+
+    const result = await Effect.runPromise(program)
+    expect(result.sessionKey).toBe("expected-session")
+  })
+
+  it("fails with SpawnError when agent unavailable", async () => {
+    const BrokenSpawner = Layer.succeed(AgentSpawner, {
+      spawn: () => Effect.fail(new SpawnError({ reason: "unavailable" }))
+    })
+
+    const exit = await Effect.runPromiseExit(
+      dispatchJob("issue-1").pipe(
+        Effect.provide(JobStoreFake),
+        Effect.provide(BrokenSpawner),
+      )
+    )
+
+    // Check the failure type
+    expect(Exit.isFailure(exit)).toBe(true)
+    if (Exit.isFailure(exit)) {
+      const err = exit.cause  // Cause<SpawnError>
+      // use Cause.match or Cause.failureOption to inspect
+    }
+  })
+})
+```
+
+**Testing rules:**
+- Never use real I/O (network, filesystem) in unit tests — use `Layer.succeed` fakes
+- Test the E channel explicitly — verify that errors are the right type, not just that the effect failed
+- Use `Effect.runPromiseExit` (not `runPromise`) when you want to assert on failures without throwing
+- For testing config: `Config.withDefault` or `ConfigProvider.fromMap` lets you supply test values
+
+```ts
+// Provide test config via ConfigProvider
+const TestConfig = Layer.setConfigProvider(
+  ConfigProvider.fromMap(new Map([
+    ["PLANE_API_KEY", "test-key"],
+    ["DB_PATH", ":memory:"],
+  ]))
+)
+
+const program = myEffect.pipe(Effect.provide(TestConfig))
+```
+
+---
+
+## Code-Review Checklist for Effect Code
+
+When reviewing Effect-TS code, check for these anti-patterns:
+
+### Type system integrity
+- [ ] No `unknown` in the E channel — every expected error has a named tagged type
+- [ ] No `any` casts anywhere in the Effect pipeline
+- [ ] No `as` casts used to silence type errors
+- [ ] Error union not collapsed to a base class or interface — it should be a discriminated union of tagged errors
+- [ ] `R` channel (requirements) not incorrectly forced to `never` via `Effect.provide` in the wrong place
+
+### Effect.gen correctness
+- [ ] Uses `function*` not `() =>` (arrow function generators silently fail to type-check correctly)
+- [ ] Uses `yield*` not `yield` on every effectful value
+- [ ] No `await` inside `Effect.gen` — all async bridging via `Effect.tryPromise`
+- [ ] No `console.log` — use `Effect.logInfo/logError/logDebug`
+
+### Service / Layer patterns
+- [ ] Dependencies declared in the `R` channel, not hardcoded with `new ServiceImpl()` inside gen
+- [ ] `Layer.provide(dependent, dependency)` order is correct (dependent first)
+- [ ] Test layers use `Layer.succeed` — not real I/O
+- [ ] `Effect.runPromise` only at the outermost boundary, not inside helper functions
+
+### SQL / resource safety
+- [ ] Mutations inside `sql.withTransaction` when atomicity matters
+- [ ] Row shapes typed explicitly in `sql<RowType>\`...\`` — not inferred as `unknown`
+- [ ] snake_case → camelCase mapping is explicit (not assumed automatic)
+- [ ] `Effect.acquireRelease` or `Effect.scoped` for any resource that needs cleanup
+
+### Error handling
+- [ ] `catchTag` / `catchTags` preferred over `catchAll` (more precise)
+- [ ] `Effect.orDie` used deliberately and commented — not as a lazy escape hatch
+- [ ] Retry schedules have a bound (`Schedule.recurs(n)`) — unbounded retries are a bug
 
 ---
 
