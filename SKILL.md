@@ -232,11 +232,11 @@ const AppLayer = Layer.provide(PlaneClientLive, AppConfigLive)
 ## @effect/sql + bun:sqlite
 
 ```ts
-import { BunSqlite } from "@effect/sql-bun"
+import { SqliteClient } from "@effect/sql-sqlite-bun"  // ← correct package name
 import { SqlClient } from "@effect/sql"
 
 // Layer setup
-const SqliteLive = BunSqlite.layer({ filename: "./jobs.db" })
+const SqliteLive = SqliteClient.layer({ filename: "./jobs.db" })
 
 // Usage inside Effect.gen
 const claimJob = (issueId: string, sessionKey: string) =>
@@ -485,7 +485,7 @@ const atomicClaim = (issueId: string, sessionKey: string) =>
 ## Installation
 
 ```bash
-bun add effect @effect/sql @effect/sql-bun
+bun add effect @effect/sql @effect/sql-sqlite-bun
 # For AI features:
 bun add @effect/ai @effect/ai-anthropic
 ```
@@ -496,7 +496,7 @@ bun add @effect/ai @effect/ai-anthropic
 |---------|---------|
 | `effect` | Core: Effect, Layer, Schedule, Stream, Fiber, etc. |
 | `@effect/sql` | SQL abstraction (queries, transactions, migrations) |
-| `@effect/sql-bun` | bun:sqlite driver for @effect/sql |
+| `@effect/sql-sqlite-bun` | bun:sqlite driver for @effect/sql |
 | `@effect/ai` | Provider-agnostic LLM integration |
 | `@effect/ai-anthropic` | Anthropic backend for @effect/ai |
 
