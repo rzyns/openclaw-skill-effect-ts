@@ -261,6 +261,10 @@ const claimJob = (issueId: string, sessionKey: string) =>
   })
 // type: Effect<void, SqlError, SqlClient.SqlClient>
 
+// DDL (CREATE TABLE, ALTER TABLE, etc.) — use sql.unsafe(), not the tagged template
+// Tagged template sql`...` does not accept DDL statements
+yield* sql.unsafe("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, ...)")
+
 // Transactions
 const atomicClaimAndUpdate = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
@@ -799,10 +803,13 @@ const atomicClaim = (issueId: string, sessionKey: string) =>
 ## Installation
 
 ```bash
-bun add effect @effect/sql @effect/sql-sqlite-bun
+# Pinned versions — peer dep resolution is fragile; use these exact versions
+bun add effect @effect/sql@0.49.0 @effect/sql-sqlite-bun @effect/platform@0.94.0 @effect/experimental@0.58.0
 # For AI features:
 bun add @effect/ai @effect/ai-anthropic
 ```
+
+**⚠️ Peer dep warning:** `@effect/sql@0.50+` requires `@effect/experimental@0.59+` but bun may resolve an older version, causing a runtime crash ("missing module"). If you hit this, pin to `@effect/sql@0.49.0` + `@effect/experimental@0.58.0` + `@effect/platform@0.94.0` explicitly.
 
 **Row shape note:** `@effect/sql-sqlite-bun` returns column names verbatim (snake_case). Map to camelCase manually if your interface uses it:
 ```ts
