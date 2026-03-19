@@ -1,0 +1,7 @@
+# FTS5 index — generated locally, not committed (can be large)
+scripts/effect-api.db
+scripts/effect-api.db-shm
+scripts/effect-api.db-wal
+
+# Download cache
+scripts/.cache/

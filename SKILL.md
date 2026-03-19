@@ -502,6 +502,63 @@ bun add @effect/ai @effect/ai-anthropic
 
 ---
 
+## API Lookup — FTS5 Index
+
+The skill ships a local SQLite FTS5 index over both the narrative docs and the full TypeDoc API reference. Use this when you need exact function signatures, combinator options, or type parameters that aren't in the SKILL.md examples.
+
+### First-time setup (run once per machine)
+
+```bash
+cd ~/dev/openclaw-skill-effect-ts
+python3 scripts/build-index.py
+# Takes ~2 min — downloads llms-full.txt + crawls 230 API pages
+# Re-run with --force to refresh after an Effect version update
+```
+
+The index is written to `scripts/effect-api.db` (gitignored — build locally).
+
+### Searching
+
+```bash
+# Find function/combinator docs
+python3 scripts/search-api.py "retry exponential backoff"
+python3 scripts/search-api.py "Layer provide merge"
+python3 scripts/search-api.py "Data TaggedError"
+
+# Restrict to API reference only (signatures, type params)
+python3 scripts/search-api.py "withTransaction" --source api-reference
+
+# Restrict to a specific module
+python3 scripts/search-api.py "exponential" --module "effect/Schedule"
+python3 scripts/search-api.py "withTransaction" --module "sql/SqlClient"
+
+# JSON output (for piping or programmatic use)
+python3 scripts/search-api.py "Effect retry" --json --limit 5
+
+# Increase result count
+python3 scripts/search-api.py "stream error recovery" --limit 10
+```
+
+**Note on dotted names:** FTS5 treats `.` as a token boundary. `Effect.retry` is automatically split into `"Effect" "retry"` by the search script — both tokens are searched. Use plain word queries for best results: `retry exponential` rather than `Effect.retry Schedule.exponential`.
+
+### What's indexed
+
+| Source | Content |
+|--------|---------|
+| `llms-full.txt` | Full narrative docs: guides, concepts, code examples (764 chunks) |
+| `effect` package | 175 API modules: Effect.ts, Schedule.ts, Layer.ts, Stream.ts, Schema.ts, Fiber.ts, … |
+| `@effect/sql` | 13 modules: SqlClient.ts, Statement.ts, Migrator.ts, Model.ts, … |
+| `@effect/ai` | 39 modules: LanguageModel.ts, Tool.ts, AnthropicLanguageModel.ts, … |
+
+### When to use
+
+- You need the exact signature of an obscure combinator (`Schedule.makeWithState`, `Stream.groupByKey`)
+- You want all overloads of a function
+- You're looking for which module exports a symbol
+- Cross-referencing the narrative explanation with the TypeDoc signature
+
+---
+
 ## References
 
 - Full docs (LLM-optimised): https://effect.website/llms-full.txt
